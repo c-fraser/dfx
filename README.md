@@ -1,2 +1,3 @@
-# d-flow
-Utilities to distribute asynchronous flow﻿ operations
+# dfx
+
+Utilities to distribute [asynchronous flow](https://kotlinlang.org/docs/flow.html) operations.
