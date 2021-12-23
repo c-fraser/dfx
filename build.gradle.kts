@@ -82,6 +82,7 @@ subprojects project@{
 
     register<Test>("e2eTest") {
       description = "Runs tests annotated with 'e2e' tag"
+      testLogging.showStandardStreams = true
 
       useJUnitPlatform { includeTags("e2e") }
     }

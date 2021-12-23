@@ -1,6 +1,12 @@
+import com.bmuschko.gradle.docker.tasks.container.DockerCreateContainer
+import com.bmuschko.gradle.docker.tasks.container.DockerStartContainer
+import com.bmuschko.gradle.docker.tasks.container.DockerStopContainer
+import com.google.cloud.tools.jib.gradle.BuildDockerTask
+
 plugins {
   application
   id("com.google.cloud.tools.jib")
+  id("com.bmuschko.docker-remote-api")
 }
 
 val testWorker = "io.github.cfraser.dfx.test.MainKt"
@@ -15,16 +21,34 @@ dependencies {
 }
 
 jib {
-  from { image = "openjdk:11-alpine" }
-  to {
-    image = "${System.getenv("DOCKER_REPOSITORY")}:dfx-$name-$version"
-    auth {
-      username = System.getenv("DOCKER_USERNAME")
-      password = System.getenv("DOCKER_PASSWORD")
-    }
-  }
+  from { image = "gcr.io/distroless/java:11" }
   container {
     ports = listOf("8787")
     mainClass = testWorker
+  }
+}
+
+tasks {
+  val jibDockerBuild by getting(BuildDockerTask::class)
+
+  val createWorkerContainer by
+      creating(DockerCreateContainer::class) {
+        dependsOn(jibDockerBuild)
+        targetImageId("${project.name}:${project.version}")
+        hostConfig.portBindings.set(listOf("8787:8787"))
+      }
+
+  val startWorkerContainer by
+      creating(DockerStartContainer::class) {
+        dependsOn(createWorkerContainer)
+        targetContainerId(createWorkerContainer.containerId)
+      }
+
+  val stopWorkerContainer by
+      creating(DockerStopContainer::class) { targetContainerId(createWorkerContainer.containerId) }
+
+  named<Test>("e2eTest") {
+    dependsOn(startWorkerContainer)
+    finalizedBy(stopWorkerContainer)
   }
 }

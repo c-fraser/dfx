@@ -27,7 +27,6 @@ import java.io.InputStream
 import java.io.ObjectInputStream
 import java.io.ObjectOutputStream
 import java.io.ObjectStreamClass
-import kotlin.coroutines.suspendCoroutine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.objectweb.asm.AnnotationVisitor
@@ -55,14 +54,15 @@ internal tailrec suspend fun collectDependencies(
     dependencies: MutableSet<String> = mutableSetOf()
 ): Set<String> {
   collected += className
-  dependencies +=
-      useSystemResource(className) { inputStream ->
-        val classDependencyCollector = ClassDependencyCollector()
-        ClassReader(inputStream).accept(classDependencyCollector, ClassReader.EXPAND_FRAMES)
-        classDependencyCollector.dependencies.filterNot { dependency ->
-          dependency.startsWithAny("java/", "kotlin/", "dfx/")
-        }
-      }
+  useSystemResource(className) { inputStream ->
+    val classDependencyCollector = ClassDependencyCollector()
+    @Suppress("BlockingMethodInNonBlockingContext")
+    ClassReader(inputStream).accept(classDependencyCollector, ClassReader.EXPAND_FRAMES)
+    classDependencyCollector.dependencies.filterNot { dependency ->
+      dependency.startsWithAny("java/", "kotlin/")
+    }
+  }
+      ?.apply { dependencies += this }
   return when (val dependency =
       dependencies.firstOrNull { dependency -> dependency !in collected }) {
     null -> dependencies
@@ -189,16 +189,13 @@ private class ClassDependencyCollector : ClassRemapper(NoOpClassVisitor, ClassRe
  * @param T the type returned by [block]
  * @param name the name of the system resource
  * @param block the function to execute
- * @return the instance of [T] returned by [block]
- * @throws IllegalStateException if a resource with [name] was not found
+ * @return the instance of [T] returned by [block] or `null` if a resource with [name] was not found
  */
-internal suspend fun <T> useSystemResource(name: String, block: suspend (InputStream) -> T): T {
+internal suspend fun <T> useSystemResource(name: String, block: suspend (InputStream) -> T): T? {
   return withContext(Dispatchers.IO) {
-    checkNotNull(ClassLoader.getSystemResourceAsStream(name)) {
-      "Failed to find system resource $name"
+    ClassLoader.getSystemResourceAsStream(name)?.buffered()?.use { inputStream ->
+      block(inputStream)
     }
-        .buffered()
-        .use { inputStream -> block(inputStream) }
   }
 }
 
@@ -208,16 +205,14 @@ internal suspend fun <T> useSystemResource(name: String, block: suspend (InputSt
  * @return the serialized object
  */
 internal suspend fun Any.serialize(): ByteBuf {
-  return suspendCoroutine { continuation ->
-    val result = runCatching {
-      ByteBufOutputStream(Unpooled.buffer()).use { byteBufOutputStream ->
-        ObjectOutputStream(byteBufOutputStream).use { objectOutputStream ->
-          objectOutputStream.writeObject(this)
-        }
-        byteBufOutputStream.buffer()
+  return withContext(Dispatchers.IO) {
+    ByteBufOutputStream(Unpooled.buffer()).use { byteBufOutputStream ->
+      @Suppress("BlockingMethodInNonBlockingContext")
+      ObjectOutputStream(byteBufOutputStream).use { objectOutputStream ->
+        objectOutputStream.writeObject(this@serialize)
       }
+      byteBufOutputStream.buffer()
     }
-    continuation.resumeWith(result)
   }
 }
 
@@ -228,16 +223,14 @@ internal suspend fun Any.serialize(): ByteBuf {
  * @return the deserialized object
  */
 internal suspend fun ByteBuf.deserialize(classLoader: ClassLoader? = null): Any {
-  return suspendCoroutine { continuation ->
-    val result = runCatching {
-      ByteBufInputStream(this).use { byteBufInputStream ->
-        (classLoader?.let { _classLoader -> byteBufInputStream.asObjectInputStream(_classLoader) }
-                ?: ObjectInputStream(byteBufInputStream)).use { objectInputStream ->
-          objectInputStream.readObject()
-        }
+  return withContext(Dispatchers.IO) {
+    ByteBufInputStream(this@deserialize).use { byteBufInputStream ->
+      @Suppress("BlockingMethodInNonBlockingContext")
+      (classLoader?.let { _classLoader -> byteBufInputStream.asObjectInputStream(_classLoader) }
+              ?: ObjectInputStream(byteBufInputStream)).use { objectInputStream ->
+        objectInputStream.readObject()
       }
     }
-    continuation.resumeWith(result)
   }
 }
 

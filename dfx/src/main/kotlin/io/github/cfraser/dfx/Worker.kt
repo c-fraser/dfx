@@ -55,9 +55,14 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flatMapConcat
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.reactive.asFlow
 import kotlinx.coroutines.reactive.asPublisher
@@ -236,24 +241,27 @@ private class RSocketWorker(
       constructor(address: InetSocketAddress) : this({ TcpClientTransport.create(address) })
 
       override fun initialize(transform: (Any) -> Flow<Any>): Worker.Connection {
-        val initialization = flow {
-          val transformClass = "${transform::class.java.name.replace('.', '/')}.class"
-          val dependencies = collectDependencies(transformClass)
-          for (dependency in dependencies) useSystemResource(dependency) { inputStream ->
-            val data =
-                withContext(Dispatchers.IO) {
-                  ByteArrayOutputStream().use { outputStream ->
-                    inputStream.transferTo(outputStream)
-                    outputStream.toByteArray()
+        val initialization =
+            flowOf("${transform::class.java.name.replace('.', '/')}.class")
+                .flatMapConcat { transformClass -> collectDependencies(transformClass).asFlow() }
+                .mapNotNull { dependency ->
+                  useSystemResource(dependency) { inputStream ->
+                    val data =
+                        ByteArrayOutputStream().use { outputStream ->
+                          inputStream.transferTo(outputStream)
+                          outputStream.toByteArray()
+                        }
+                    val resource = Resource(dependency, data)
+                    newPayload(resource.serialize(), INITIALIZE_RESOURCE_ROUTE)
                   }
                 }
-            val resource = Resource(dependency, data)
-            val serialized = resource.serialize()
-            emit(newPayload(serialized, INITIALIZE_RESOURCE_ROUTE))
-          }
-          val serialized = transform.serialize()
-          emit(newPayload(serialized, INITIALIZE_RESOURCE_ROUTE))
-        }
+                .flowOn(Dispatchers.IO)
+                .let { payloads ->
+                  flow {
+                    emitAll(payloads)
+                    emit(newPayload(transform.serialize(), INITIALIZE_RESOURCE_ROUTE))
+                  }
+                }
         val rSocketClient =
             runBlocking(Dispatchers.IO) {
               val setupPayload = mono { newSetupPayload() }
@@ -262,7 +270,7 @@ private class RSocketWorker(
               // Client transport used by RSocketClient
               val clientTransport = transportInitializer()
               RSocketClient.from(connector.connect(clientTransport)).apply {
-                requestChannel(initialization.asPublisher(Dispatchers.IO)).collect {}
+                requestChannel(initialization.asPublisher()).collect {}
               }
             }
         return Connection(rSocketClient)
@@ -338,8 +346,6 @@ private class RSocketWorker(
             else -> error("Received unexpected route $route")
           }
         }
-
-        /*send(newPayload(Unpooled.EMPTY_BUFFER))*/
       }
     }
 

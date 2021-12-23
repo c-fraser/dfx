@@ -10,6 +10,7 @@ pluginManagement {
   val atomicfuVersion: String by settings
   val knitVersion: String by settings
   val jibVersion: String by settings
+  val dockerApiVersion: String by settings
 
   plugins {
     kotlin("jvm") version kotlinVersion
@@ -21,6 +22,7 @@ pluginManagement {
     id("com.github.johnrengelman.shadow") version shadowVersion
     id("org.jetbrains.dokka") version dokkaVersion
     id("com.google.cloud.tools.jib") version jibVersion
+    id("com.bmuschko.docker-remote-api") version dockerApiVersion
   }
 
   repositories {

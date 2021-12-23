@@ -15,7 +15,16 @@ limitations under the License.
 */
 package io.github.cfraser.dfx.test
 
+import io.github.cfraser.dfx.distribute
+import java.net.InetSocketAddress
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
+import org.apache.commons.lang3.RandomStringUtils
+import org.apache.commons.lang3.StringUtils
 import org.junit.jupiter.api.Tag
 
 @Tag("e2e")
@@ -23,6 +32,12 @@ class E2ETest {
 
   @Test
   fun testDistributedTransform() {
-    TODO()
+    val randomStrings = buildList { repeat(10) { this += RandomStringUtils.random(5) } }
+    val reversedRandomStrings =
+        randomStrings
+            .asFlow()
+            .distribute(InetSocketAddress(8787)) { s -> flowOf(StringUtils.reverse(s)) }
+            .run { runBlocking { toList() } }
+    assertEquals(randomStrings, reversedRandomStrings.map { s -> StringUtils.reverse(s) })
   }
 }

@@ -21,7 +21,7 @@ dependencies {
   val rsocketVersion: String by rootProject
   val kotlinLoggingVersion: String by rootProject
 
-  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:$kotlinxCoroutinesVersion")
+  api("org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:$kotlinxCoroutinesVersion")
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor:$kotlinxCoroutinesVersion")
   implementation("org.ow2.asm:asm:$asmVersion")
   implementation("org.ow2.asm:asm-commons:$asmVersion")

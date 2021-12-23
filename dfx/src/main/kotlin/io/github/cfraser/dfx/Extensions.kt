@@ -17,9 +17,11 @@ package io.github.cfraser.dfx
 
 import java.io.Serializable
 import java.net.InetSocketAddress
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.flatMapConcat
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.mapNotNull
 
 /**
@@ -38,7 +40,8 @@ inline fun <reified In, reified Out> Flow<In>.distribute(
   val connection =
       newWorkerConnection(
           remoteWorker, @Suppress("UNCHECKED_CAST") (transform as (Any) -> Flow<Any>))
-  return buffer().flatMapConcat { value -> connection.transform(value) }.mapNotNull { transformed ->
-    transformed as? Out
-  }
+  return buffer()
+      .flatMapConcat { value -> connection.transform(value) }
+      .flowOn(Dispatchers.IO)
+      .mapNotNull { transformed -> transformed as? Out }
 }
