@@ -1,4 +1,5 @@
 import com.bmuschko.gradle.docker.tasks.container.DockerCreateContainer
+import com.bmuschko.gradle.docker.tasks.container.DockerLogsContainer
 import com.bmuschko.gradle.docker.tasks.container.DockerStartContainer
 import com.bmuschko.gradle.docker.tasks.container.DockerStopContainer
 import com.google.cloud.tools.jib.gradle.BuildDockerTask
@@ -14,10 +15,13 @@ val testWorker = "io.github.cfraser.dfx.test.MainKt"
 application { mainClass.set(testWorker) }
 
 dependencies {
+  val slf4jVersion: String by rootProject
   val commonsLang3Version: String by rootProject
 
   implementation(project(":dfx"))
+  runtimeOnly("org.slf4j:slf4j-simple:$slf4jVersion")
   testImplementation("org.apache.commons:commons-lang3:$commonsLang3Version")
+  testRuntimeOnly("org.slf4j:slf4j-simple:$slf4jVersion")
 }
 
 jib {
@@ -44,8 +48,17 @@ tasks {
         targetContainerId(createWorkerContainer.containerId)
       }
 
+  val copyWorkerContainerLogs by
+      creating(DockerLogsContainer::class) {
+        targetContainerId(startWorkerContainer.containerId)
+        tailAll.set(true)
+      }
+
   val stopWorkerContainer by
-      creating(DockerStopContainer::class) { targetContainerId(createWorkerContainer.containerId) }
+      creating(DockerStopContainer::class) {
+        dependsOn(copyWorkerContainerLogs)
+        targetContainerId(createWorkerContainer.containerId)
+      }
 
   named<Test>("e2eTest") {
     dependsOn(startWorkerContainer)

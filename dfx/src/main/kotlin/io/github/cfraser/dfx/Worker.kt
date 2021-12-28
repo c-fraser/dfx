@@ -45,6 +45,8 @@ import java.nio.file.Path
 import java.util.UUID
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
+import kotlin.io.path.createDirectories
+import kotlin.io.path.createFile
 import kotlin.io.path.writeBytes
 import kotlinx.atomicfu.atomic
 import kotlinx.coroutines.Dispatchers
@@ -173,11 +175,13 @@ private class RSocketWorker(
           // Socket connection acceptor that defines server semantics
           val acceptor = SocketAcceptor { setupPayload, _ ->
             mono {
+              LOGGER.debug { "Authenticating and deserializing setup payload" }
               val setupPayloadData = setupPayload.apply { authenticate() }.sliceData().deserialize()
               val uuid =
                   checkNotNull(setupPayloadData as? UUID) {
                     "Failed to deserialize connection identifier data"
                   }
+              LOGGER.debug { "Authenticating connection $uuid" }
               // RSocket handling the incoming requests
               RequestHandler(uuid)
             }
@@ -243,34 +247,48 @@ private class RSocketWorker(
       override fun initialize(transform: (Any) -> Flow<Any>): Worker.Connection {
         val initialization =
             flowOf("${transform::class.java.name.replace('.', '/')}.class")
-                .flatMapConcat { transformClass -> collectDependencies(transformClass).asFlow() }
+                .flatMapConcat { transformClass ->
+                  LOGGER.debug {
+                    "Collecting dependencies for distributed transform $transformClass"
+                  }
+                  collectDependencies(transformClass)
+                      .also { dependencies ->
+                        LOGGER.debug {
+                          val formattedDependencies = dependencies.joinToString("\t\n")
+                          "Collected dependencies for $transformClass: \t\n$formattedDependencies"
+                        }
+                      }
+                      .asFlow()
+                }
                 .mapNotNull { dependency ->
                   useSystemResource(dependency) { inputStream ->
-                    val data =
-                        ByteArrayOutputStream().use { outputStream ->
+                    ByteArrayOutputStream()
+                        .use { outputStream ->
                           inputStream.transferTo(outputStream)
                           outputStream.toByteArray()
                         }
-                    val resource = Resource(dependency, data)
-                    newPayload(resource.serialize(), INITIALIZE_RESOURCE_ROUTE)
+                        .takeUnless { bytes -> bytes.isEmpty() }
+                        ?.let { data -> Resource(dependency, data) }
+                        ?.run { newPayload(serialize(), INITIALIZE_RESOURCE_ROUTE) }
                   }
                 }
                 .flowOn(Dispatchers.IO)
                 .let { payloads ->
                   flow {
                     emitAll(payloads)
-                    emit(newPayload(transform.serialize(), INITIALIZE_RESOURCE_ROUTE))
+                    emit(newPayload(transform.serialize(), INITIALIZE_TRANSFORM_ROUTE))
                   }
                 }
         val rSocketClient =
             runBlocking(Dispatchers.IO) {
-              val setupPayload = mono { newSetupPayload() }
+              val setupPayload = mono { newSetupPayload(UUID.randomUUID()) }
               // Connector specifying rSocket connection semantics
               val connector = RSocketConnector.create().setupPayload(setupPayload)
               // Client transport used by RSocketClient
               val clientTransport = transportInitializer()
               RSocketClient.from(connector.connect(clientTransport)).apply {
                 requestChannel(initialization.asPublisher()).collect {}
+                LOGGER.debug { "Initialized client connection to remote worker" }
               }
             }
         return Connection(rSocketClient)
@@ -321,20 +339,30 @@ private class RSocketWorker(
     private val aTransform = atomic<((Any) -> Flow<Any>)?>(null)
 
     override fun requestChannel(payloads: Publisher<Payload>): Flux<Payload> {
-      return flux(Dispatchers.IO) {
+      return flux(dispatcher) {
         payloads.asFlow().collect { payload ->
           when (val route = payload.route()) {
             INITIALIZE_RESOURCE_ROUTE -> {
               val payloadData = payload.sliceData().deserialize()
               val resource =
                   checkNotNull(payloadData as? Resource) { "Failed to deserialize resource data" }
-              resource.run {
-                withContext(Dispatchers.IO) { resourcePath.resolve(path).writeBytes(data) }
-              }
+              LOGGER.debug { "Writing ${resource.path} to $resourcePath" }
+              resource
+                  .runCatching {
+                    withContext(Dispatchers.IO) {
+                      resourcePath
+                          .resolve(path)
+                          .apply { parent.createDirectories() }
+                          .createFile()
+                          .writeBytes(data)
+                    }
+                  }
+                  .onFailure { throwable ->
+                    LOGGER.warn(throwable) { "Failed to write ${resource.path} to $resourcePath" }
+                  }
             }
             INITIALIZE_TRANSFORM_ROUTE -> {
-              val payloadData =
-                  withContext(dispatcher) { payload.sliceData().deserialize(classLoader) }
+              val payloadData = payload.sliceData().deserialize(classLoader)
               val transform =
                   checkNotNull(@Suppress("UNCHECKED_CAST") (payloadData as? (Any) -> Flow<Any>)) {
                     "Failed to deserialize transform data"
@@ -342,6 +370,7 @@ private class RSocketWorker(
               check(aTransform.compareAndSet(expect = null, update = transform)) {
                 "Transform initialization has already occurred"
               }
+              LOGGER.debug { "Distributed transform initialized" }
             }
             else -> error("Received unexpected route $route")
           }
@@ -358,6 +387,7 @@ private class RSocketWorker(
             .map { transformed -> transformed.serialize() }
             .map { serialized -> newPayload(serialized) }
             .collect { payload -> send(payload) }
+        LOGGER.debug { "Transformed value $value" }
       }
     }
 
@@ -367,7 +397,10 @@ private class RSocketWorker(
         classLoader.close()
         resourcePath.toFile().deleteRecursively()
       }
-          .flatMap { Mono.empty() }
+          .flatMap {
+            LOGGER.debug { "Closed connection and deleted resources $resourcePath" }
+            Mono.empty()
+          }
     }
   }
 
@@ -437,12 +470,13 @@ private class RSocketWorker(
      * Initialize a [Payload], for the setup connection, that contains the [TOKEN] in the auth
      * metadata.
      *
+     * @param uuid the [UUID] representing the connection identifier
      * @return the [Payload]
      */
-    suspend fun newSetupPayload(): Payload {
+    suspend fun newSetupPayload(uuid: UUID): Payload {
       return withContext(Dispatchers.Default) {
         val authMetadata = AuthMetadataCodec.encodeBearerMetadata(ByteBufAllocator.DEFAULT, TOKEN)
-        ByteBufPayload.create(Unpooled.EMPTY_BUFFER, authMetadata)
+        ByteBufPayload.create(uuid.serialize(), authMetadata)
       }
     }
 

@@ -16,9 +16,6 @@ limitations under the License.
 package io.github.cfraser.dfx
 
 import io.github.cfraser.dfx.ClassDependencyCollector.ClassResourceCollector
-import io.github.cfraser.dfx.ClassDependencyCollector.NoOpClassVisitor.NoOpAnnotationVisitor.api
-import io.github.cfraser.dfx.ClassDependencyCollector.NoOpClassVisitor.NoOpFieldVisitor.api
-import io.github.cfraser.dfx.ClassDependencyCollector.NoOpClassVisitor.NoOpMethodVisitor.api
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.ByteBufInputStream
 import io.netty.buffer.ByteBufOutputStream
@@ -59,7 +56,7 @@ internal tailrec suspend fun collectDependencies(
     @Suppress("BlockingMethodInNonBlockingContext")
     ClassReader(inputStream).accept(classDependencyCollector, ClassReader.EXPAND_FRAMES)
     classDependencyCollector.dependencies.filterNot { dependency ->
-      dependency.startsWithAny("java/", "kotlin/")
+      dependency.startsWithAny("java/", "jdk/", "sun/", "kotlin/")
     }
   }
       ?.apply { dependencies += this }
@@ -100,7 +97,7 @@ private class ClassDependencyCollector : ClassRemapper(NoOpClassVisitor, ClassRe
 
     /**
      * [NoOpAnnotationVisitor] is a [no-op](https://en.wikipedia.org/wiki/NOP_(code))
-     * [AnnotationVisitor] for the [api].
+     * [AnnotationVisitor] for the [AnnotationVisitor.api].
      */
     private object NoOpAnnotationVisitor : AnnotationVisitor(api) {
       override fun visitAnnotation(name: String?, descriptor: String?) = apply {}
@@ -109,7 +106,7 @@ private class ClassDependencyCollector : ClassRemapper(NoOpClassVisitor, ClassRe
 
     /**
      * [NoOpFieldVisitor] is a [no-op](https://en.wikipedia.org/wiki/NOP_(code)) [FieldVisitor] for
-     * the [api].
+     * the [FieldVisitor.api].
      */
     private object NoOpFieldVisitor : FieldVisitor(api) {
       override fun visitAnnotation(descriptor: String?, visible: Boolean) = NoOpAnnotationVisitor
@@ -123,7 +120,7 @@ private class ClassDependencyCollector : ClassRemapper(NoOpClassVisitor, ClassRe
 
     /**
      * [NoOpMethodVisitor] is a [no-op](https://en.wikipedia.org/wiki/NOP_(code)) [MethodVisitor]
-     * for the [api].
+     * for the [MethodVisitor.api].
      */
     private object NoOpMethodVisitor : MethodVisitor(api) {
       override fun visitAnnotationDefault() = NoOpAnnotationVisitor
