@@ -13,12 +13,18 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package io.github.cfraser.dfx
+package io.github.cfraser.dfx.rsocket
 
+import io.github.cfraser.dfx.api.Worker
+import io.github.cfraser.dfx.util.Resource
+import io.github.cfraser.dfx.util.collectDependencies
+import io.github.cfraser.dfx.util.deserialize
+import io.github.cfraser.dfx.util.serialize
+import io.github.cfraser.dfx.util.useSystemResource
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.ByteBufAllocator
 import io.netty.buffer.Unpooled
-import io.rsocket.Closeable as RSocketCloseable
+import io.rsocket.Closeable
 import io.rsocket.ConnectionSetupPayload
 import io.rsocket.Payload
 import io.rsocket.RSocket
@@ -36,8 +42,6 @@ import io.rsocket.transport.netty.client.TcpClientTransport
 import io.rsocket.transport.netty.server.TcpServerTransport
 import io.rsocket.util.ByteBufPayload
 import java.io.ByteArrayOutputStream
-import java.io.Closeable
-import java.io.Serializable
 import java.net.InetSocketAddress
 import java.net.URLClassLoader
 import java.nio.file.Files
@@ -73,80 +77,10 @@ import kotlinx.coroutines.reactor.flux
 import kotlinx.coroutines.reactor.mono
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import mu.KotlinLogging
 import org.reactivestreams.Publisher
+import org.slf4j.LoggerFactory
 import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
-
-/** A [Worker] asynchronously processes *work* received from a *distributed* [Flow]. */
-interface Worker {
-
-  /** Start the [Worker]. */
-  fun start()
-
-  /** Stop the [Worker]. */
-  fun stop()
-
-  /**
-   * A [Worker.Connection] represents an active session with a *remote* [Worker].
-   *
-   * [Worker.Connection] implements [Closeable], therefore [close] **should** be invoked
-   * appropriately to free the underlying resources.
-   */
-  @InternalDfxApi
-  interface Connection : Closeable {
-
-    /**
-     * Transform the [value] on the *remote* [Worker].
-     *
-     * @param value the data to transform
-     * @return the [Flow] of transformed data
-     */
-    suspend fun transform(value: Any): Flow<Any>
-
-    /**
-     * A [Worker.Connection.Initializer] initializes a [Worker.Connection] to a *remote* [Worker].
-     */
-    @InternalDfxApi
-    interface Initializer {
-
-      /**
-       * Establish a connection to a *remote* [Worker] and initialize the *distributed* [transform].
-       *
-       * @param transform the *distributed* transform function
-       * @return the [Worker.Connection]
-       */
-      fun initialize(transform: (Any) -> Flow<Any>): Connection
-    }
-  }
-}
-
-/**
- * Initialize a [Worker] that binds to the [port].
- *
- * @param port the port to bind to
- * @return the [Worker]
- */
-fun newWorker(port: Int): Worker {
-  return RSocketWorker(port)
-}
-
-/**
- * Initialize a [Worker.Connection] which executes the [transform] on the *remote* [Worker] at
- * [address].
- *
- * @param address the [InetSocketAddress] of the *remote* [Worker]
- * @param transform the *distributed* transform function
- * @return the [Worker.Connection]
- */
-@PublishedApi
-internal fun newWorkerConnection(
-    address: InetSocketAddress,
-    transform: (value: Any) -> Flow<Any>
-): Worker.Connection {
-  val initializer = RSocketWorker.Connection.Initializer(address)
-  return initializer.initialize(transform)
-}
 
 /**
  * [RSocketWorker] is a [Worker] implementation that uses [RSocket](https://rsocket.io/) as the
@@ -154,9 +88,9 @@ internal fun newWorkerConnection(
  *
  * @property transportInitializer is a function that initializes a [ServerTransport]
  */
-private class RSocketWorker(
-    private val transportInitializer: () -> ServerTransport<out RSocketCloseable>
-) : Worker {
+class RSocketWorker
+internal constructor(private val transportInitializer: () -> ServerTransport<out Closeable>) :
+    Worker {
 
   /**
    * Construct a [RSocketWorker] with the default [transportInitializer] which creates a
@@ -175,13 +109,13 @@ private class RSocketWorker(
           // Socket connection acceptor that defines server semantics
           val acceptor = SocketAcceptor { setupPayload, _ ->
             mono {
-              LOGGER.debug { "Authenticating and deserializing setup payload" }
+              LOGGER.debug("Authenticating and deserializing setup payload")
               val setupPayloadData = setupPayload.apply { authenticate() }.sliceData().deserialize()
               val uuid =
                   checkNotNull(setupPayloadData as? UUID) {
                     "Failed to deserialize connection identifier data"
                   }
-              LOGGER.debug { "Authenticating connection $uuid" }
+              LOGGER.debug("Authenticating connection {}", uuid)
               // RSocket handling the incoming requests
               RequestHandler(uuid)
             }
@@ -191,7 +125,7 @@ private class RSocketWorker(
           // Create the RSocketServer and bind to the server transport
           val disposable = RSocketServer.create(acceptor).bindNow(serverTransport)
           try {
-            LOGGER.debug { "${RSocketWorker::class.simpleName} started" }
+            LOGGER.debug("{} started", RSocketWorker::class.simpleName)
             awaitCancellation()
           } finally {
             if (!disposable.isDisposed) disposable.runCatching { dispose() }
@@ -202,98 +136,7 @@ private class RSocketWorker(
   @Synchronized
   override fun stop() {
     (rSocketServer ?: return).runCatching { runBlocking(Dispatchers.IO) { cancelAndJoin() } }
-    LOGGER.debug { "${RSocketWorker::class.simpleName} stopped" }
-  }
-
-  /**
-   * [RSocketWorker.Connection] is a [Worker.Connection] implementation for executing *distributed*
-   * transforms on a *remote* [RSocketWorker].
-   *
-   * @property rSocketClient the [RSocketClient] to use to interact with the remote [RSocketWorker]
-   */
-  class Connection(private val rSocketClient: RSocketClient) : Worker.Connection {
-
-    override suspend fun transform(value: Any): Flow<Any> {
-      val serialized = value.serialize()
-      val payload = mono { newPayload(serialized, TRANSFORM_VALUE_ROUTE) }
-      return rSocketClient
-          .requestStream(payload)
-          .asFlow()
-          .map { _payload -> _payload.sliceData() }
-          .flowOn(Dispatchers.Default)
-          .map { data -> data.deserialize() }
-          .flowOn(Dispatchers.IO)
-    }
-
-    override fun close() {
-      if (!rSocketClient.isDisposed) rSocketClient.runCatching { dispose() }
-    }
-
-    /**
-     * [RSocketWorker.Connection.Initializer] is a [Worker.Connection.Initializer] implementation
-     * for establishing a [RSocketWorker.Connection] to a [RSocketWorker].
-     *
-     * @property transportInitializer is a function that initializes a [ClientTransport]
-     */
-    class Initializer(private val transportInitializer: () -> ClientTransport) :
-        Worker.Connection.Initializer {
-
-      /**
-       * Construct a [RSocketWorker.Connection.Initializer] with the default [transportInitializer]
-       * which creates a [TcpClientTransport] connecting to the given [InetSocketAddress].
-       */
-      constructor(address: InetSocketAddress) : this({ TcpClientTransport.create(address) })
-
-      override fun initialize(transform: (Any) -> Flow<Any>): Worker.Connection {
-        val initialization =
-            flowOf("${transform::class.java.name.replace('.', '/')}.class")
-                .flatMapConcat { transformClass ->
-                  LOGGER.debug {
-                    "Collecting dependencies for distributed transform $transformClass"
-                  }
-                  collectDependencies(transformClass)
-                      .also { dependencies ->
-                        LOGGER.debug {
-                          val formattedDependencies = dependencies.joinToString("\t\n")
-                          "Collected dependencies for $transformClass: \t\n$formattedDependencies"
-                        }
-                      }
-                      .asFlow()
-                }
-                .mapNotNull { dependency ->
-                  useSystemResource(dependency) { inputStream ->
-                    ByteArrayOutputStream()
-                        .use { outputStream ->
-                          inputStream.transferTo(outputStream)
-                          outputStream.toByteArray()
-                        }
-                        .takeUnless { bytes -> bytes.isEmpty() }
-                        ?.let { data -> Resource(dependency, data) }
-                        ?.run { newPayload(serialize(), INITIALIZE_RESOURCE_ROUTE) }
-                  }
-                }
-                .flowOn(Dispatchers.IO)
-                .let { payloads ->
-                  flow {
-                    emitAll(payloads)
-                    emit(newPayload(transform.serialize(), INITIALIZE_TRANSFORM_ROUTE))
-                  }
-                }
-        val rSocketClient =
-            runBlocking(Dispatchers.IO) {
-              val setupPayload = mono { newSetupPayload(UUID.randomUUID()) }
-              // Connector specifying rSocket connection semantics
-              val connector = RSocketConnector.create().setupPayload(setupPayload)
-              // Client transport used by RSocketClient
-              val clientTransport = transportInitializer()
-              RSocketClient.from(connector.connect(clientTransport)).apply {
-                requestChannel(initialization.asPublisher()).collect {}
-                LOGGER.debug { "Initialized client connection to remote worker" }
-              }
-            }
-        return Connection(rSocketClient)
-      }
-    }
+    LOGGER.debug("{} stopped", RSocketWorker::class.simpleName)
   }
 
   /**
@@ -346,7 +189,7 @@ private class RSocketWorker(
               val payloadData = payload.sliceData().deserialize()
               val resource =
                   checkNotNull(payloadData as? Resource) { "Failed to deserialize resource data" }
-              LOGGER.debug { "Writing ${resource.path} to $resourcePath" }
+              LOGGER.debug("Writing {} to {}", resource.path, resourcePath)
               resource
                   .runCatching {
                     withContext(Dispatchers.IO) {
@@ -358,7 +201,7 @@ private class RSocketWorker(
                     }
                   }
                   .onFailure { throwable ->
-                    LOGGER.warn(throwable) { "Failed to write ${resource.path} to $resourcePath" }
+                    LOGGER.warn("Failed to write {} to {}", resource.path, resourcePath, throwable)
                   }
             }
             INITIALIZE_TRANSFORM_ROUTE -> {
@@ -370,7 +213,7 @@ private class RSocketWorker(
               check(aTransform.compareAndSet(expect = null, update = transform)) {
                 "Transform initialization has already occurred"
               }
-              LOGGER.debug { "Distributed transform initialized" }
+              LOGGER.debug("Distributed transform using {} initialized", resourcePath)
             }
             else -> error("Received unexpected route $route")
           }
@@ -383,11 +226,12 @@ private class RSocketWorker(
       return flux(dispatcher) {
         check(payload.route() == TRANSFORM_VALUE_ROUTE) { "Received unexpected route" }
         val value = payload.sliceData().deserialize(classLoader)
+        LOGGER.debug("Transforming value {}", value)
         transform(value)
             .map { transformed -> transformed.serialize() }
             .map { serialized -> newPayload(serialized) }
             .collect { payload -> send(payload) }
-        LOGGER.debug { "Transformed value $value" }
+        LOGGER.debug("Transformed value {}", value)
       }
     }
 
@@ -398,30 +242,99 @@ private class RSocketWorker(
         resourcePath.toFile().deleteRecursively()
       }
           .flatMap {
-            LOGGER.debug { "Closed connection and deleted resources $resourcePath" }
+            LOGGER.debug("Closed connection and deleted resources {}", resourcePath)
             Mono.empty()
           }
     }
   }
 
   /**
-   * [Resource] is a [Serializable] class for a classpath resource that must be initialized on the
-   * *remote* [Worker] so that *distributed* transform can be executed.
+   * [RSocketWorker.Connection] is a [Worker.Connection] implementation for executing *distributed*
+   * transforms on a *remote* [RSocketWorker].
    *
-   * @property path the path of the classpath resource
-   * @property data the content of the classpath resource
+   * @param transportInitializer is a function that initializes a [ClientTransport]
+   * @param transform the *distributed* transform function
    */
-  private class Resource(val path: String, val data: ByteArray) : Serializable {
+  class Connection
+  internal constructor(transportInitializer: () -> ClientTransport, transform: (Any) -> Flow<Any>) :
+      Worker.Connection {
 
-    private companion object {
+    /**
+     * Construct a [RSocketWorker.Connection.Initializer] with the default [transportInitializer]
+     * which creates a [TcpClientTransport] connecting to the given [InetSocketAddress].
+     */
+    constructor(
+        address: InetSocketAddress,
+        transform: (Any) -> Flow<Any>
+    ) : this({ TcpClientTransport.create(address) }, transform)
 
-      const val serialVersionUID = 888L
+    /** The [RSocketClient] to use to interact with the remote [RSocketWorker]. */
+    private val rSocketClient by lazy {
+      val initialization =
+          flowOf("${transform::class.java.name.replace('.', '/')}.class")
+              .flatMapConcat { transformClass ->
+                LOGGER.debug("Collecting dependencies for distributed transform {}", transformClass)
+                collectDependencies(transformClass)
+                    .also { dependencies ->
+                      LOGGER.debug(
+                          "Collected dependencies for {}: \t\n{}",
+                          transformClass,
+                          dependencies.joinToString("\t\n"))
+                    }
+                    .asFlow()
+              }
+              .mapNotNull { dependency ->
+                useSystemResource(dependency) { inputStream ->
+                  ByteArrayOutputStream()
+                      .use { outputStream ->
+                        inputStream.transferTo(outputStream)
+                        outputStream.toByteArray()
+                      }
+                      .takeUnless { bytes -> bytes.isEmpty() }
+                      ?.let { data -> Resource(dependency, data) }
+                      ?.run { newPayload(serialize(), INITIALIZE_RESOURCE_ROUTE) }
+                }
+              }
+              .flowOn(Dispatchers.IO)
+              .let { payloads ->
+                flow {
+                  emitAll(payloads)
+                  emit(newPayload(transform.serialize(), INITIALIZE_TRANSFORM_ROUTE))
+                }
+              }
+      runBlocking(Dispatchers.IO) {
+        val setupPayload = mono { newSetupPayload(UUID.randomUUID()) }
+        // Connector specifying rSocket connection semantics
+        val connector = RSocketConnector.create().setupPayload(setupPayload)
+        // Client transport used by RSocketClient
+        val clientTransport = transportInitializer()
+        RSocketClient.from(connector.connect(clientTransport)).apply {
+          requestChannel(initialization.asPublisher()).collect {}
+          LOGGER.debug("Initialized client connection to remote worker")
+        }
+      }
+    }
+
+    override suspend fun transform(value: Any): Flow<Any> {
+      val serialized = value.serialize()
+      val payload = mono { newPayload(serialized, TRANSFORM_VALUE_ROUTE) }
+      return rSocketClient
+          .requestStream(payload)
+          .asFlow()
+          .map { _payload -> _payload.sliceData() }
+          .flowOn(Dispatchers.Default)
+          .map { data -> data.deserialize() }
+          .flowOn(Dispatchers.IO)
+    }
+
+    override fun close() {
+      if (!rSocketClient.isDisposed) rSocketClient.runCatching { dispose() }
     }
   }
 
   private companion object {
 
-    val LOGGER = KotlinLogging.logger {}
+    val LOGGER = LoggerFactory.getLogger(RSocketWorker::class.java)!!
 
     /** The authorized bearer token used to authenticate connections. */
     val TOKEN = "dfx".toCharArray()

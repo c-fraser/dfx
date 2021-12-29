@@ -15,7 +15,7 @@ formatting:
 
 naming:
   MatchingDeclarationName:
-    excludes: [ '**/dfx/src/main/kotlin/io/github/cfraser/dfx/Annotations.kt' ]
+    excludes: [ '**/dfx-util/src/main/kotlin/io/github/cfraser/dfx/util/Resources.kt' ]
   TopLevelPropertyNaming:
     constantPattern: '[A-Za-z][_A-Za-z0-9]*'
 

@@ -41,4 +41,6 @@ pluginManagement {
   }
 }
 
-include("dfx", "e2e-test")
+rootProject.name = "dfx"
+
+include("dfx-api", "dfx-core", "dfx-rsocket", "dfx-util", "e2e-test")

@@ -23,14 +23,15 @@ import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.flatMapConcat
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.onCompletion
 
 /**
  * Execute the [transform] on the [remoteWorker].
  *
  * @param In the input type
  * @param Out the output type
- * @param remoteWorker the [InetSocketAddress] of the *remote* [Worker].
- * @param transform the *distributed* transform function
+ * @param remoteWorker the [InetSocketAddress] of the *remote worker*
+ * @param transform the *distributed transform* function
  * @return the [Flow] containing the results of the *distributed* [transform]
  */
 inline fun <reified In, reified Out> Flow<In>.distribute(
@@ -41,6 +42,7 @@ inline fun <reified In, reified Out> Flow<In>.distribute(
       newWorkerConnection(
           remoteWorker, @Suppress("UNCHECKED_CAST") (transform as (Any) -> Flow<Any>))
   return buffer()
+      .onCompletion { connection.close() }
       .flatMapConcat { value -> connection.transform(value) }
       .flowOn(Dispatchers.IO)
       .mapNotNull { transformed -> transformed as? Out }

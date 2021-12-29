@@ -18,7 +18,7 @@ dependencies {
   val slf4jVersion: String by rootProject
   val commonsLang3Version: String by rootProject
 
-  implementation(project(":dfx"))
+  implementation(project(":dfx-core"))
   runtimeOnly("org.slf4j:slf4j-simple:$slf4jVersion")
   testImplementation("org.apache.commons:commons-lang3:$commonsLang3Version")
   testRuntimeOnly("org.slf4j:slf4j-simple:$slf4jVersion")

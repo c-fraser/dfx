@@ -13,12 +13,9 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package io.github.cfraser.dfx
+package io.github.cfraser.dfx.util
 
-/** The [InternalDfxApi] annotation is applied to **internal** *dfx* APIs. */
-@Retention(value = AnnotationRetention.BINARY)
-@Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION)
-@RequiresOptIn(
-    level = RequiresOptIn.Level.ERROR,
-    message = "This is an internal 'dfx' API that is not intended to be used externally.")
-annotation class InternalDfxApi
+/** Returns `true` if this string starts with any of the specified [prefixes]. */
+fun String.startsWithAny(vararg prefixes: String, ignoreCase: Boolean = false): Boolean {
+  return prefixes.any { prefix -> startsWith(prefix, ignoreCase) }
+}

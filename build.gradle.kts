@@ -13,7 +13,6 @@ if (JavaVersion.current() < JavaVersion.VERSION_11)
 plugins {
   kotlin("jvm") apply false
   id("org.jetbrains.dokka") apply false
-  /*id("com.github.johnrengelman.shadow") apply false*/
   id("com.diffplug.spotless")
   id("io.gitlab.arturbosch.detekt")
   id("io.github.gradle-nexus.publish-plugin")
@@ -47,34 +46,43 @@ subprojects project@{
     "implementation"(kotlin("reflect"))
     "testImplementation"(kotlin("test"))
     "testImplementation"(kotlin("test-junit5"))
-    "testImplementation"("org.junit.jupiter:junit-jupiter-api:$junitVersion")
-    "testRuntimeOnly"("org.junit.jupiter:junit-jupiter-engine:$junitVersion")
+    "testImplementation"(platform("org.junit:junit-bom:$junitVersion"))
+    "testImplementation"("org.junit.jupiter:junit-jupiter")
+    "testRuntimeOnly"("org.junit.platform:junit-platform-launcher")
   }
 
   tasks {
+    val compileJava by getting(JavaCompile::class)
+    val compileKotlin by getting(KotlinCompile::class)
+
+    withType<JavaCompile>() {
+      dependsOn(compileKotlin)
+      inputs.property(
+          "moduleName",
+          this@project.name.run projectName@{
+            if (contains('-')) replace('-', '.') else this@projectName
+          })
+      doFirst { options.compilerArgs = listOf("--module-path", classpath.asPath) }
+    }
+
     withType<KotlinCompile>().configureEach {
+      destinationDirectory.set(compileJava.destinationDirectory)
       kotlinOptions {
         jvmTarget = "${JavaVersion.VERSION_11}"
         freeCompilerArgs =
             listOf(
                 "-Xjsr305=strict",
-                "-Xopt-in=kotlin.RequiresOptIn",
                 "-Xopt-in=kotlinx.coroutines.DelicateCoroutinesApi",
-                "-Xopt-in=kotlinx.coroutines.FlowPreview",
-                "-Xopt-in=io.github.cfraser.dfx.InternalDfxApi")
+                "-Xopt-in=kotlinx.coroutines.FlowPreview")
       }
     }
 
     withType<Jar> {
+      duplicatesStrategy = DuplicatesStrategy.EXCLUDE
       manifest {
-        val moduleName =
-            this@project.name.run projectName@{
-              if (contains('-')) replace('-', '.') else this@projectName
-            }
         attributes(
             "${Attributes.Name.IMPLEMENTATION_TITLE}" to this@project.name,
-            "${Attributes.Name.IMPLEMENTATION_VERSION}" to this@project.version,
-            "Automatic-Module-Name" to "io.github.cfraser.$moduleName")
+            "${Attributes.Name.IMPLEMENTATION_VERSION}" to this@project.version)
       }
     }
 
@@ -113,13 +121,6 @@ subprojects project@{
       buildUponDefaultConfig = true
       config.setFrom(rootDir.resolve("detekt.yml"))
     }
-
-    /*plugins.withType<ShadowPlugin>() {
-      withType<ShadowJar>() {
-        archiveClassifier.set("")
-        minimize()
-      }
-    }*/
   }
 
   plugins.withType<MavenPublishPlugin> {
