@@ -43,4 +43,6 @@ pluginManagement {
 
 rootProject.name = "dfx"
 
-include("dfx-api", "dfx-core", "dfx-rsocket", "dfx-util", "e2e-test")
+include("test-worker")
+
+project(":test-worker").projectDir = file("src/test-worker")

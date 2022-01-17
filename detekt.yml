@@ -4,18 +4,18 @@ comments:
   UndocumentedPublicClass:
     active: true
     excludes: [ '**/*.kt' ]
-    includes: [ '**/dfx/src/main/kotlin/**/*.kt' ]
+    includes: [ '**/src/main/kotlin/**/*.kt' ]
   UndocumentedPublicFunction:
     active: true
     excludes: [ '**/*.kt' ]
-    includes: [ '**/dfx/src/main/kotlin/**/*.kt' ]
+    includes: [ '**/src/main/kotlin/**/*.kt' ]
 
 formatting:
   active: false
 
 naming:
   MatchingDeclarationName:
-    excludes: [ '**/dfx-util/src/main/kotlin/io/github/cfraser/dfx/util/Resources.kt' ]
+    excludes: [ '**/src/main/kotlin/io/github/cfraser/dfx/util/ResourceUtils.kt' ]
   TopLevelPropertyNaming:
     constantPattern: '[A-Za-z][_A-Za-z0-9]*'
 

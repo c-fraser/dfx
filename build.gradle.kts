@@ -1,5 +1,6 @@
 import com.diffplug.gradle.spotless.SpotlessExtension
 import io.gitlab.arturbosch.detekt.Detekt
+import java.net.URL
 import java.util.jar.Attributes
 import org.jetbrains.dokka.Platform
 import org.jetbrains.dokka.gradle.AbstractDokkaTask
@@ -11,14 +12,17 @@ if (JavaVersion.current() < JavaVersion.VERSION_11)
     throw GradleException("Java 11+ is required for this project")
 
 plugins {
-  kotlin("jvm") apply false
-  id("org.jetbrains.dokka") apply false
+  kotlin("jvm")
+  `java-library`
+  `maven-publish`
+  signing
+  id("kotlinx-atomicfu")
+  id("org.jetbrains.dokka")
   id("com.diffplug.spotless")
   id("io.gitlab.arturbosch.detekt")
   id("io.github.gradle-nexus.publish-plugin")
   id("org.jreleaser")
   id("com.github.ben-manes.versions")
-  /*id("kotlinx-knit")*/
 }
 
 allprojects {
@@ -28,168 +32,96 @@ allprojects {
   repositories { mavenCentral() }
 }
 
-subprojects project@{
-  apply(plugin = "org.jetbrains.kotlin.jvm")
-  apply(plugin = "org.jetbrains.dokka")
-  apply(plugin = "io.gitlab.arturbosch.detekt")
+dependencies {
+  val kotlinxCoroutinesVersion: String by rootProject
+  val asmVersion: String by rootProject
+  val rsocketVersion: String by rootProject
+  val slf4jVersion: String by rootProject
 
-  plugins.withType<JavaLibraryPlugin>() {
-    configure<JavaPluginExtension> {
-      sourceCompatibility = JavaVersion.VERSION_11
-      targetCompatibility = JavaVersion.VERSION_11
+  api("org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:$kotlinxCoroutinesVersion")
+  implementation(kotlin("reflect"))
+  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor:$kotlinxCoroutinesVersion")
+  implementation("org.ow2.asm:asm:$asmVersion")
+  implementation("org.ow2.asm:asm-commons:$asmVersion")
+  implementation("io.rsocket:rsocket-core:$rsocketVersion")
+  implementation("io.rsocket:rsocket-transport-netty:$rsocketVersion")
+  implementation("org.slf4j:slf4j-api:$slf4jVersion")
+
+  val junitVersion: String by rootProject
+  val commonsLang3Version: String by rootProject
+
+  testImplementation(kotlin("test"))
+  testImplementation(kotlin("test-junit5"))
+  testImplementation(platform("org.junit:junit-bom:$junitVersion"))
+  testImplementation("org.junit.jupiter:junit-jupiter")
+  testImplementation("org.apache.commons:commons-lang3:$commonsLang3Version")
+}
+
+java {
+  sourceCompatibility = JavaVersion.VERSION_11
+  targetCompatibility = JavaVersion.VERSION_11
+}
+
+atomicfu {
+  val atomicfuVersion: String by rootProject
+
+  dependenciesVersion = atomicfuVersion
+  transformJvm = true
+  variant = "VH"
+  verbose = false
+}
+
+tasks {
+  withType<Jar>().configureEach {
+    manifest {
+      attributes(
+          "${Attributes.Name.IMPLEMENTATION_TITLE}" to project.name,
+          "${Attributes.Name.IMPLEMENTATION_VERSION}" to project.version,
+          "Automatic-Module-Name" to "io.github.cfraser.${project.name}")
     }
   }
 
-  dependencies {
-    val junitVersion: String by rootProject
-
-    "implementation"(kotlin("reflect"))
-    "testImplementation"(kotlin("test"))
-    "testImplementation"(kotlin("test-junit5"))
-    "testImplementation"(platform("org.junit:junit-bom:$junitVersion"))
-    "testImplementation"("org.junit.jupiter:junit-jupiter")
-    "testRuntimeOnly"("org.junit.platform:junit-platform-launcher")
-  }
-
-  tasks {
-    val compileJava by getting(JavaCompile::class)
-    val compileKotlin by getting(KotlinCompile::class)
-
-    withType<JavaCompile>() {
-      dependsOn(compileKotlin)
-      inputs.property(
-          "moduleName",
-          this@project.name.run projectName@{
-            if (contains('-')) replace('-', '.') else this@projectName
-          })
-      doFirst { options.compilerArgs = listOf("--module-path", classpath.asPath) }
-    }
-
-    withType<KotlinCompile>().configureEach {
-      destinationDirectory.set(compileJava.destinationDirectory)
-      kotlinOptions {
-        jvmTarget = "${JavaVersion.VERSION_11}"
-        freeCompilerArgs =
-            listOf(
-                "-Xjsr305=strict",
-                "-Xopt-in=kotlinx.coroutines.DelicateCoroutinesApi",
-                "-Xopt-in=kotlinx.coroutines.FlowPreview")
-      }
-    }
-
-    withType<Jar> {
-      duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-      manifest {
-        attributes(
-            "${Attributes.Name.IMPLEMENTATION_TITLE}" to this@project.name,
-            "${Attributes.Name.IMPLEMENTATION_VERSION}" to this@project.version)
-      }
-    }
-
-    withType<Test> { useJUnitPlatform { excludeTags("e2e") } }
-
-    register<Test>("e2eTest") {
-      description = "Runs tests annotated with 'e2e' tag"
-      testLogging.showStandardStreams = true
-
-      useJUnitPlatform { includeTags("e2e") }
-    }
-
-    withType<DokkaTask>().configureEach {
-      dokkaSourceSets {
-        named("main") {
-          moduleName.set(this@project.name)
-          runCatching { this@project.file("MODULE.md").takeIf { it.exists() }!! }.onSuccess {
-              moduleDocumentation ->
-            includes.from(moduleDocumentation)
-          }
-          platform.set(Platform.jvm)
-          jdkVersion.set(JavaVersion.VERSION_11.ordinal)
-          sourceLink {
-            localDirectory.set(this@project.file("src/main/kotlin"))
-            remoteUrl.set(
-                java.net.URL(
-                    "https://github.com/c-fraser/dfx/tree/main/${this@project.name}/src/main/kotlin"))
-            remoteLineSuffix.set("#L")
-          }
-        }
-      }
-    }
-
-    withType<Detekt> {
+  withType<KotlinCompile>().configureEach {
+    kotlinOptions {
       jvmTarget = "${JavaVersion.VERSION_11}"
-      buildUponDefaultConfig = true
-      config.setFrom(rootDir.resolve("detekt.yml"))
+      freeCompilerArgs =
+          listOf(
+              "-Xjsr305=strict",
+              "-Xopt-in=kotlinx.coroutines.DelicateCoroutinesApi",
+              "-Xopt-in=kotlinx.coroutines.FlowPreview")
     }
   }
 
-  plugins.withType<MavenPublishPlugin> {
-    configure<PublishingExtension> {
-      val dokkaJavadocJar by
-          tasks.creating(Jar::class) {
-            val dokkaJavadoc by tasks.getting(AbstractDokkaTask::class)
-            dependsOn(dokkaJavadoc)
-            archiveClassifier.set("javadoc")
-            from(dokkaJavadoc.outputDirectory.get())
-          }
+  withType<Test> {
+    useJUnitPlatform()
 
-      val sourcesJar by
-          tasks.creating(Jar::class) {
-            val sourceSets: SourceSetContainer by this@project
-            dependsOn(tasks["classes"])
-            archiveClassifier.set("sources")
-            from(sourceSets["main"].allSource)
-          }
+    dependsOn(":test-worker:startWorkerContainer")
+    finalizedBy(":test-worker:stopWorkerContainer")
+  }
 
-      publications {
-        create<MavenPublication>("maven") {
-          from(this@project.components["java"])
-          artifact(dokkaJavadocJar)
-          artifact(sourcesJar)
-          pom {
-            name.set(this@project.name)
-            description.set("${this@project.name}-${this@project.version}")
-            url.set("https://github.com/c-fraser/dfx")
-            inceptionYear.set("2021")
-
-            issueManagement {
-              system.set("GitHub")
-              url.set("https://github.com/c-fraser/dfx/issues")
-            }
-
-            licenses {
-              license {
-                name.set("The Apache Software License, Version 2.0")
-                url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
-                distribution.set("repo")
-              }
-            }
-
-            developers {
-              developer {
-                id.set("c-fraser")
-                name.set("Chris Fraser")
-              }
-            }
-
-            scm {
-              url.set("https://github.com/c-fraser/dfx")
-              connection.set("scm:git:git://github.com/c-fraser/dfx.git")
-              developerConnection.set("scm:git:ssh://git@github.com/c-fraser/dfx.git")
-            }
-          }
+  withType<DokkaTask>().configureEach {
+    dokkaSourceSets {
+      named("main") {
+        moduleName.set(project.name)
+        runCatching { project.file("MODULE.md").takeIf { it.exists() }!! }.onSuccess {
+            moduleDocumentation ->
+          includes.from(moduleDocumentation)
         }
-      }
-
-      plugins.withType<SigningPlugin>() {
-        configure<SigningExtension> {
-          publications.withType<MavenPublication>().all mavenPublication@{
-            useInMemoryPgpKeys(System.getenv("GPG_SIGNING_KEY"), System.getenv("GPG_PASSWORD"))
-            sign(this@mavenPublication)
-          }
+        platform.set(Platform.jvm)
+        jdkVersion.set(JavaVersion.VERSION_11.ordinal)
+        sourceLink {
+          localDirectory.set(project.file("src/main/kotlin"))
+          remoteUrl.set(URL("https://github.com/c-fraser/dfx/tree/main/src/main/kotlin"))
+          remoteLineSuffix.set("#L")
         }
       }
     }
+  }
+
+  withType<Detekt> {
+    jvmTarget = "${JavaVersion.VERSION_11}"
+    buildUponDefaultConfig = true
+    config.setFrom(rootDir.resolve("detekt.yml"))
   }
 }
 
@@ -216,15 +148,75 @@ configure<SpotlessExtension> {
         limitations under the License.
         */
         """.trimIndent())
-    target(
-        fileTree(rootProject.rootDir) {
-          // Exclude the files automatically generated by `kotlinx-knit`
-          exclude("examples/src/*/kotlin/io/github/cfraser/dfx/example/knit/*.kt")
-          include("**/src/**/*.kt")
-        })
+    target(fileTree(rootProject.rootDir) { include("src/**/*.kt") })
   }
 
   kotlinGradle { ktfmt(ktfmtVersion) }
+}
+
+publishing {
+  val dokkaJavadocJar by
+      tasks.creating(Jar::class) {
+        val dokkaJavadoc by tasks.getting(AbstractDokkaTask::class)
+        dependsOn(dokkaJavadoc)
+        archiveClassifier.set("javadoc")
+        from(dokkaJavadoc.outputDirectory.get())
+      }
+
+  val sourcesJar by
+      tasks.creating(Jar::class) {
+        val sourceSets: SourceSetContainer by project
+        dependsOn(tasks["classes"])
+        archiveClassifier.set("sources")
+        from(sourceSets["main"].allSource)
+      }
+
+  publications {
+    create<MavenPublication>("maven") {
+      from(project.components["java"])
+      artifact(dokkaJavadocJar)
+      artifact(sourcesJar)
+      pom {
+        name.set(project.name)
+        description.set("${project.name}-${project.version}")
+        url.set("https://github.com/c-fraser/dfx")
+        inceptionYear.set("2021")
+
+        issueManagement {
+          system.set("GitHub")
+          url.set("https://github.com/c-fraser/dfx/issues")
+        }
+
+        licenses {
+          license {
+            name.set("The Apache Software License, Version 2.0")
+            url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
+            distribution.set("repo")
+          }
+        }
+
+        developers {
+          developer {
+            id.set("c-fraser")
+            name.set("Chris Fraser")
+          }
+        }
+
+        scm {
+          url.set("https://github.com/c-fraser/dfx")
+          connection.set("scm:git:git://github.com/c-fraser/dfx.git")
+          developerConnection.set("scm:git:ssh://git@github.com/c-fraser/dfx.git")
+        }
+      }
+    }
+  }
+
+  signing {
+    publications.withType<MavenPublication>().all mavenPublication@{
+      useInMemoryPgpKeys(System.getenv("GPG_SIGNING_KEY"), System.getenv("GPG_PASSWORD"))
+      sign(this@mavenPublication)
+    }
+  }
 }
 
 nexusPublishing {
@@ -268,29 +260,4 @@ jreleaser {
       }
     }
   }
-}
-
-/*configure<KnitPluginExtension> {
-  siteRoot = "https://github.com/c-fraser/dfx"
-  files = fileTree(rootProject.rootDir) { include("README.md") }
-  rootDir = rootProject.rootDir
-}*/
-
-tasks {
-  val detektAll by
-      registering(Detekt::class) {
-        jvmTarget = "${JavaVersion.VERSION_11}"
-        parallel = true
-        buildUponDefaultConfig = true
-        config.setFrom(rootDir.resolve("detekt.yml"))
-        setSource(files(projectDir))
-        include("**/*.kt", "**/*.kts")
-        exclude(
-            "**/build/**",
-            "**/resources/**",
-            // Exclude the files automatically generated by `kotlinx-knit`
-            "examples/src/*/kotlin/io/github/cfraser/dfx/example/knit/*.kt")
-      }
-
-  spotlessApply { finalizedBy(detektAll) }
 }
